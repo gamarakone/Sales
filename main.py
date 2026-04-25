@@ -1,25 +1,23 @@
 """
-CLI for the Apify leads integration.
+CLI for the leads integration (Apify + Apollo.io).
 
 Usage examples:
 
-  # Run an actor and store results
+  # --- Apollo (direct API) ---
+  python main.py apollo-search --title "VP Sales" --location "New York" --max 200
+  python main.py apollo-search --industry "SaaS" --seniority vp --seniority c_suite
+  python main.py apollo-enrich --email jane@acme.com
+  python main.py apollo-companies --industry "Fintech" --min-employees 50
+
+  # --- Apify ---
   python main.py run --actor apify/linkedin-profile-scraper \
       --input '{"profileUrls": ["https://linkedin.com/in/..."]}'
-
-  # Pull from an existing dataset (no new run)
   python main.py dataset --id <dataset_id>
-
-  # Pull from the last successful run of an actor
   python main.py last-run --actor apify/linkedin-profile-scraper
 
-  # List stored leads
+  # --- Storage ---
   python main.py list --company "Acme"
-
-  # Export to CSV
   python main.py export --output leads.csv
-
-  # Show total count
   python main.py stats
 """
 import json
@@ -28,6 +26,7 @@ import sys
 import click
 
 import apify_leads
+import apollo_leads
 import storage
 from models import Lead
 
@@ -42,10 +41,91 @@ def _normalise_and_store(
     click.echo(f"Stored {inserted} new leads ({skipped} duplicates skipped).")
 
 
+def _store_leads(leads: list[Lead]) -> None:
+    inserted, skipped = storage.upsert_leads(leads)
+    click.echo(f"Stored {inserted} new leads ({skipped} duplicates skipped).")
+
+
 @click.group()
 def cli():
-    """Apify leads integration — pull, store, and export leads."""
+    """Leads integration — Apollo.io + Apify — pull, store, and export."""
     storage.init_db()
+
+
+# ---------------------------------------------------------------------------
+# Apollo commands
+# ---------------------------------------------------------------------------
+
+@cli.command("apollo-search")
+@click.option("--title", "titles", multiple=True, help="Job title filter (repeatable)")
+@click.option("--company", "companies", multiple=True, help="Company name filter (repeatable)")
+@click.option("--location", "locations", multiple=True, help="Location filter (repeatable)")
+@click.option("--industry", "industries", multiple=True, help="Industry tag (repeatable)")
+@click.option("--seniority", "seniorities", multiple=True,
+              help="Seniority level: senior|manager|director|vp|c_suite|founder (repeatable)")
+@click.option("--keywords", default="", help="Keyword search string")
+@click.option("--max", "max_leads", default=100, show_default=True, help="Max leads to pull")
+def apollo_search(titles, companies, locations, industries, seniorities, keywords, max_leads):
+    """Search Apollo.io for people and store results."""
+    click.echo(f"Searching Apollo for up to {max_leads} leads...")
+    leads = apollo_leads.search_people_all_pages(
+        titles=list(titles) or None,
+        companies=list(companies) or None,
+        locations=list(locations) or None,
+        industries=list(industries) or None,
+        seniorities=list(seniorities) or None,
+        keywords=keywords,
+        max_leads=max_leads,
+    )
+    click.echo(f"Found {len(leads)} leads from Apollo.")
+    _store_leads(leads)
+
+
+@cli.command("apollo-enrich")
+@click.option("--email", default="", help="Email address to enrich")
+@click.option("--linkedin", default="", help="LinkedIn URL to enrich")
+@click.option("--name", default="", help="Full name (use with --domain)")
+@click.option("--domain", default="", help="Company domain (use with --name)")
+def apollo_enrich(email, linkedin, name, domain):
+    """Enrich a single contact via Apollo.io and store the result."""
+    if not any([email, linkedin, name]):
+        click.echo("Provide at least one of --email, --linkedin, or --name.", err=True)
+        sys.exit(1)
+    lead = apollo_leads.enrich_person(email=email, linkedin_url=linkedin, name=name, domain=domain)
+    if not lead:
+        click.echo("No match found in Apollo.")
+        return
+    click.echo(f"Enriched: {lead.full_name} | {lead.title} | {lead.company} | {lead.email}")
+    _store_leads([lead])
+
+
+@cli.command("apollo-companies")
+@click.option("--name", "names", multiple=True, help="Company name filter (repeatable)")
+@click.option("--industry", "industries", multiple=True, help="Industry tag (repeatable)")
+@click.option("--location", "locations", multiple=True, help="Location filter (repeatable)")
+@click.option("--min-employees", type=int, default=None, help="Min employee count")
+@click.option("--max-employees", type=int, default=None, help="Max employee count")
+@click.option("--keywords", default="", help="Keyword search string")
+@click.option("--page", default=1, show_default=True)
+def apollo_companies(names, industries, locations, min_employees, max_employees, keywords, page):
+    """Search Apollo.io for companies (outputs to terminal, not stored)."""
+    orgs, total = apollo_leads.search_companies(
+        names=list(names) or None,
+        industries=list(industries) or None,
+        locations=list(locations) or None,
+        min_employees=min_employees,
+        max_employees=max_employees,
+        keywords=keywords,
+        page=page,
+    )
+    click.echo(f"Found {total} companies (showing page {page}):")
+    for org in orgs:
+        click.echo(
+            f"  {org.get('name', '?')}  |  "
+            f"{org.get('website_url', '')}  |  "
+            f"employees={org.get('estimated_num_employees', '?')}  |  "
+            f"industry={org.get('industry', '')}"
+        )
 
 
 @cli.command()
@@ -65,7 +145,8 @@ def run(actor: str, run_input: str, timeout: int, limit: int):
         sys.exit(1)
     items = apify_leads.pull_leads_from_actor(actor, parsed_input, timeout, limit)
     dataset_id = items[0].get("datasetId", "") if items else ""
-    _normalise_and_store(items, source_actor=actor, source_dataset=dataset_id)
+    leads = [Lead.from_raw(item, source_actor=actor, source_dataset=dataset_id) for item in items]
+    _store_leads(leads)
 
 
 @cli.command()
@@ -75,7 +156,8 @@ def run(actor: str, run_input: str, timeout: int, limit: int):
 def dataset(dataset_id: str, actor: str, limit: int):
     """Fetch leads from an existing Apify dataset."""
     items = apify_leads.pull_leads_from_dataset(dataset_id, limit)
-    _normalise_and_store(items, source_actor=actor, source_dataset=dataset_id)
+    leads = [Lead.from_raw(item, source_actor=actor, source_dataset=dataset_id) for item in items]
+    _store_leads(leads)
 
 
 @cli.command("last-run")
@@ -84,7 +166,8 @@ def dataset(dataset_id: str, actor: str, limit: int):
 def last_run(actor: str, limit: int):
     """Fetch leads from the most recent successful run of an actor."""
     items = apify_leads.pull_leads_from_last_run(actor, limit)
-    _normalise_and_store(items, source_actor=actor, source_dataset="")
+    leads = [Lead.from_raw(item, source_actor=actor, source_dataset="") for item in items]
+    _store_leads(leads)
 
 
 @cli.command("list")
