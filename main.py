@@ -209,6 +209,64 @@ def stats():
     click.echo(f"Total leads in database: {total}")
 
 
+@cli.command()
+def insights():
+    """Show analytics and breakdowns of stored leads."""
+    data = storage.insights_data()
+    total = data["total"]
+    if total == 0:
+        click.echo("No leads in database yet.")
+        return
+
+    def pct(n):
+        return f"{n / total * 100:.0f}%" if total else "—"
+
+    def bar(n, width=20):
+        filled = round(n / total * width) if total else 0
+        return "█" * filled + "░" * (width - filled)
+
+    click.echo("")
+    click.echo("━━━  Lead Database Insights  ━━━")
+    click.echo(f"  Total leads : {total:,}")
+    click.echo(f"  With email  : {data['with_email']:,}  ({pct(data['with_email'])})")
+    click.echo(f"  With LinkedIn: {data['with_linkedin']:,}  ({pct(data['with_linkedin'])})")
+    click.echo(f"  With phone  : {data['with_phone']:,}  ({pct(data['with_phone'])})")
+
+    if data["by_source"]:
+        click.echo("")
+        click.echo("── By Source ──")
+        for row in data["by_source"]:
+            src = row["source_actor"] or "(unknown)"
+            cnt = row["cnt"]
+            click.echo(f"  {src:<40}  {cnt:>6,}  {bar(cnt)}")
+
+    if data["top_countries"]:
+        click.echo("")
+        click.echo("── Top Countries ──")
+        for row in data["top_countries"]:
+            click.echo(f"  {row['country']:<30}  {row['cnt']:>6,}  {bar(row['cnt'])}")
+
+    if data["top_companies"]:
+        click.echo("")
+        click.echo("── Top Companies ──")
+        for row in data["top_companies"]:
+            click.echo(f"  {row['company']:<35}  {row['cnt']:>6,}")
+
+    if data["top_titles"]:
+        click.echo("")
+        click.echo("── Top Titles ──")
+        for row in data["top_titles"]:
+            click.echo(f"  {row['title']:<40}  {row['cnt']:>6,}")
+
+    if data["by_day"]:
+        click.echo("")
+        click.echo("── Leads Added (last 14 days) ──")
+        for row in reversed(data["by_day"]):
+            click.echo(f"  {row['day']}  {row['cnt']:>6,}  {bar(row['cnt'])}")
+
+    click.echo("")
+
+
 @cli.command("list-datasets")
 @click.option("--limit", default=20, show_default=True)
 def list_datasets(limit: int):

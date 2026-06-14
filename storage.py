@@ -106,6 +106,61 @@ def count_leads() -> int:
         return con.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
 
 
+def insights_data() -> dict:
+    """Return analytics over the stored leads for the insights command."""
+    with _conn() as con:
+        total = con.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
+        with_email = con.execute(
+            "SELECT COUNT(*) FROM leads WHERE email != '' AND email IS NOT NULL"
+        ).fetchone()[0]
+        with_linkedin = con.execute(
+            "SELECT COUNT(*) FROM leads WHERE linkedin_url != '' AND linkedin_url IS NOT NULL"
+        ).fetchone()[0]
+        with_phone = con.execute(
+            "SELECT COUNT(*) FROM leads WHERE phone != '' AND phone IS NOT NULL"
+        ).fetchone()[0]
+
+        top_companies = con.execute(
+            """SELECT company, COUNT(*) AS cnt FROM leads
+               WHERE company != '' AND company IS NOT NULL
+               GROUP BY company ORDER BY cnt DESC LIMIT 10"""
+        ).fetchall()
+
+        top_countries = con.execute(
+            """SELECT country, COUNT(*) AS cnt FROM leads
+               WHERE country != '' AND country IS NOT NULL
+               GROUP BY country ORDER BY cnt DESC LIMIT 10"""
+        ).fetchall()
+
+        top_titles = con.execute(
+            """SELECT title, COUNT(*) AS cnt FROM leads
+               WHERE title != '' AND title IS NOT NULL
+               GROUP BY title ORDER BY cnt DESC LIMIT 10"""
+        ).fetchall()
+
+        by_source = con.execute(
+            """SELECT source_actor, COUNT(*) AS cnt FROM leads
+               GROUP BY source_actor ORDER BY cnt DESC"""
+        ).fetchall()
+
+        by_day = con.execute(
+            """SELECT DATE(created_at) AS day, COUNT(*) AS cnt FROM leads
+               GROUP BY day ORDER BY day DESC LIMIT 14"""
+        ).fetchall()
+
+    return {
+        "total": total,
+        "with_email": with_email,
+        "with_linkedin": with_linkedin,
+        "with_phone": with_phone,
+        "top_companies": [dict(r) for r in top_companies],
+        "top_countries": [dict(r) for r in top_countries],
+        "top_titles": [dict(r) for r in top_titles],
+        "by_source": [dict(r) for r in by_source],
+        "by_day": [dict(r) for r in by_day],
+    }
+
+
 def export_to_csv(path: str, **filters) -> int:
     rows = query_leads(**filters, limit=100_000)
     if not rows:
